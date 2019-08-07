@@ -17,6 +17,7 @@ public class MirrorReflection : MonoBehaviour
 
     private Hashtable m_ReflectionCameras = new Hashtable(); // Camera -> Camera table
 
+    [SerializeField]
     private RenderTexture m_ReflectionTexture = null;
     private int m_OldReflectionTextureSize = 0;
 
@@ -63,8 +64,8 @@ public class MirrorReflection : MonoBehaviour
 
         Matrix4x4 reflection = Matrix4x4.zero;
         CalculateReflectionMatrix(ref reflection, reflectionPlane);
-        Vector3 oldpos = cam.transform.position;
-        Vector3 newpos = reflection.MultiplyPoint(oldpos);
+        //Vector3 oldpos = cam.transform.position;
+        //Vector3 newpos = reflection.MultiplyPoint(oldpos);
         reflectionCamera.worldToCameraMatrix = cam.worldToCameraMatrix * reflection;
 
         // Setup oblique projection matrix so that near plane is our reflection
@@ -78,19 +79,27 @@ public class MirrorReflection : MonoBehaviour
         reflectionCamera.targetTexture = m_ReflectionTexture;
         //GL.SetRevertBackfacing(true);
         GL.invertCulling = true;
-        reflectionCamera.transform.position = newpos;
-        Vector3 euler = cam.transform.eulerAngles;
-        reflectionCamera.transform.eulerAngles = new Vector3(0, euler.y, euler.z);
+        //reflectionCamera.transform.position = newpos;
+        //Vector3 euler = cam.transform.eulerAngles;
+        //reflectionCamera.transform.eulerAngles = new Vector3(0, euler.y, euler.z);
+        //reflectionCamera.transform.rotation = cam.transform.rotation;
         reflectionCamera.Render();
-        reflectionCamera.transform.position = oldpos;
+        //reflectionCamera.transform.position = oldpos;
         //GL.SetRevertBackfacing(false);
         GL.invertCulling = false;
+
+#if true
+        var mat = rend.material;
+        if (mat.HasProperty("_ReflectionTex"))
+            mat.SetTexture("_ReflectionTex", m_ReflectionTexture);
+#else
         Material[] materials = rend.sharedMaterials;
         foreach (Material mat in materials)
         {
             if (mat.HasProperty("_ReflectionTex"))
                 mat.SetTexture("_ReflectionTex", m_ReflectionTexture);
         }
+#endif
 
         // Restore pixel light count
         if (m_DisablePixelLights)
@@ -192,7 +201,7 @@ public class MirrorReflection : MonoBehaviour
         Vector3 offsetPos = pos + normal * m_ClipPlaneOffset;
         Matrix4x4 m = cam.worldToCameraMatrix;
         Vector3 cpos = m.MultiplyPoint(offsetPos);
-        Vector3 cnormal = m.MultiplyVector(normal).normalized * sideSign;
+        Vector3 cnormal = -m.MultiplyVector(normal).normalized * sideSign;
         return new Vector4(cnormal.x, cnormal.y, cnormal.z, -Vector3.Dot(cpos, cnormal));
     }
 
