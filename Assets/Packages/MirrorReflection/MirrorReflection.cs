@@ -6,7 +6,7 @@ using System.Collections;
 // This is in fact just the Water script from Pro Standard Assets,
 // just with refraction stuff removed.
 
-[ExecuteAlways] // Make mirror live-update even when not in play mode
+// Make mirror live-update even when not in play mode
 public class MirrorReflection : MonoBehaviour
 {
     public bool m_DisablePixelLights = true;
@@ -21,16 +21,22 @@ public class MirrorReflection : MonoBehaviour
     private RenderTexture m_ReflectionTexture = null;
     private int m_OldReflectionTextureSize = 0;
 
-    private static bool s_InsideRendering = false;
+    static int nestCountMax = 10;
+    private static int nestCount;
 
+    Material mat;
+
+    private void Awake()
+    {
+        mat = GetComponent<Renderer>()?.material;
+    }
     // This is called when it's known that the object will be rendered by some
     // camera. We render reflections and do other updates here.
     // Because the script executes in edit mode, reflections for the scene view
     // camera will just work!
     public void OnWillRenderObject()
     {
-        var rend = GetComponent<Renderer>();
-        if (!enabled || !rend || !rend.sharedMaterial || !rend.enabled)
+        if (!enabled || (mat == null))
             return;
 
         Camera cam = Camera.current;
@@ -38,58 +44,72 @@ public class MirrorReflection : MonoBehaviour
             return;
 
         // Safeguard from recursive reflections.        
-        if (s_InsideRendering)
-            return;
-        s_InsideRendering = true;
+        if (nestCount <= nestCountMax)
+        {
+            nestCount++;
 
-        Camera reflectionCamera;
-        CreateMirrorObjects(cam, out reflectionCamera);
+            // find out the reflection plane: position and normal in world space
+            Vector3 pos = transform.position;
+            //Vector3 normal = transform.up;
+            Vector3 normal = transform.forward;
 
-        // find out the reflection plane: position and normal in world space
-        Vector3 pos = transform.position;
-        //Vector3 normal = transform.up;
-        Vector3 normal = transform.forward;
+            var camTrans = cam.transform;
+            var cull = Vector3.Dot(camTrans.position - pos, normal) >= 0f;
+            if (!cull)
+            {
+                Camera reflectionCamera;
+                CreateMirrorObjects(cam, out reflectionCamera);
 
-        // Optionally disable pixel lights for reflection
-        int oldPixelLightCount = QualitySettings.pixelLightCount;
-        if (m_DisablePixelLights)
-            QualitySettings.pixelLightCount = 0;
 
-        UpdateCameraModes(cam, reflectionCamera);
+                // Optionally disable pixel lights for reflection
+                int oldPixelLightCount = QualitySettings.pixelLightCount;
+                if (m_DisablePixelLights)
+                    QualitySettings.pixelLightCount = 0;
 
-        // Render reflection
-        // Reflect camera around reflection plane
-        float d = -Vector3.Dot(normal, pos) - m_ClipPlaneOffset;
-        Vector4 reflectionPlane = new Vector4(normal.x, normal.y, normal.z, d);
+                UpdateCameraModes(cam, reflectionCamera);
 
-        Matrix4x4 reflection = Matrix4x4.zero;
-        CalculateReflectionMatrix(ref reflection, reflectionPlane);
-        //Vector3 oldpos = cam.transform.position;
-        //Vector3 newpos = reflection.MultiplyPoint(oldpos);
-        reflectionCamera.worldToCameraMatrix = cam.worldToCameraMatrix * reflection;
+                // Render reflection
+                // Reflect camera around reflection plane
+                float d = -Vector3.Dot(normal, pos) - m_ClipPlaneOffset;
+                Vector4 reflectionPlane = new Vector4(normal.x, normal.y, normal.z, d);
 
-        // Setup oblique projection matrix so that near plane is our reflection
-        // plane. This way we clip everything below/above it for free.
-        Vector4 clipPlane = CameraSpacePlane(reflectionCamera, pos, normal, 1.0f);
-        //Matrix4x4 projection = cam.projectionMatrix;
-        Matrix4x4 projection = cam.CalculateObliqueMatrix(clipPlane);
-        reflectionCamera.projectionMatrix = projection;
+                Matrix4x4 reflection = Matrix4x4.zero;
+                CalculateReflectionMatrix(ref reflection, reflectionPlane);
+                //Vector3 oldpos = cam.transform.position;
+                //Vector3 newpos = reflection.MultiplyPoint(oldpos);
+                reflectionCamera.worldToCameraMatrix = cam.worldToCameraMatrix * reflection;
 
-        reflectionCamera.cullingMask = ~(1 << 4) & m_ReflectLayers.value; // never render water layer
-        reflectionCamera.targetTexture = m_ReflectionTexture;
-        //GL.SetRevertBackfacing(true);
-        GL.invertCulling = true;
-        //reflectionCamera.transform.position = newpos;
-        //Vector3 euler = cam.transform.eulerAngles;
-        //reflectionCamera.transform.eulerAngles = new Vector3(0, euler.y, euler.z);
-        //reflectionCamera.transform.rotation = cam.transform.rotation;
-        reflectionCamera.Render();
-        //reflectionCamera.transform.position = oldpos;
-        //GL.SetRevertBackfacing(false);
-        GL.invertCulling = false;
+                // Setup oblique projection matrix so that near plane is our reflection
+                // plane. This way we clip everything below/above it for free.
+                Vector4 clipPlane = CameraSpacePlane(reflectionCamera, pos, normal, 1.0f);
+                //Matrix4x4 projection = cam.projectionMatrix;
+                Matrix4x4 projection = cam.CalculateObliqueMatrix(clipPlane);
+                reflectionCamera.projectionMatrix = projection;
+
+                reflectionCamera.cullingMask = ~(1 << 4) & m_ReflectLayers.value; // never render water layer
+                reflectionCamera.targetTexture = m_ReflectionTexture;
+                //GL.SetRevertBackfacing(true);
+                GL.invertCulling = nestCount % 2 == 1;
+                //reflectionCamera.transform.position = newpos;
+                //Vector3 euler = cam.transform.eulerAngles;
+                //reflectionCamera.transform.eulerAngles = new Vector3(0, euler.y, euler.z);
+                //reflectionCamera.transform.rotation = cam.transform.rotation;
+                reflectionCamera.Render();
+                //reflectionCamera.transform.position = oldpos;
+                //GL.SetRevertBackfacing(false);
+                GL.invertCulling = !GL.invertCulling;
+
+
+
+                // Restore pixel light count
+                if (m_DisablePixelLights)
+                    QualitySettings.pixelLightCount = oldPixelLightCount;
+            }
+
+            nestCount--;
+        }
 
 #if true
-        var mat = rend.material;
         if (mat.HasProperty("_ReflectionTex"))
             mat.SetTexture("_ReflectionTex", m_ReflectionTexture);
 #else
@@ -100,12 +120,6 @@ public class MirrorReflection : MonoBehaviour
                 mat.SetTexture("_ReflectionTex", m_ReflectionTexture);
         }
 #endif
-
-        // Restore pixel light count
-        if (m_DisablePixelLights)
-            QualitySettings.pixelLightCount = oldPixelLightCount;
-
-        s_InsideRendering = false;
     }
 
 
