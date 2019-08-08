@@ -1,7 +1,8 @@
 ﻿// refrence http://wiki.unity3d.com/index.php/MirrorReflection4
 
+using System.Collections.Generic;
+using System.Linq;
 using UnityEngine;
-using System.Collections;
 
 // This is in fact just the Water script from Pro Standard Assets,
 // just with refraction stuff removed.
@@ -10,6 +11,9 @@ using System.Collections;
 public class MirrorReflection : MonoBehaviour
 {
     const string ReflectionTexParamStr = "_ReflectionTex";
+    static int nestCountMax = 5;
+    private static int nestCount;
+
 
     public bool m_DisablePixelLights = true;
     public int m_TextureSize = 256;
@@ -17,20 +21,26 @@ public class MirrorReflection : MonoBehaviour
 
     public LayerMask m_ReflectLayers = -1;
 
-    private Hashtable m_ReflectionCameras = new Hashtable(); // Camera -> Camera table
+    Dictionary<Camera, (Camera, RenderTexture)> mirrorDatas = new Dictionary<Camera, (Camera, RenderTexture)>();
 
-    [SerializeField]
-    private RenderTexture m_ReflectionTexture = null;
-    private int m_OldReflectionTextureSize = 0;
 
-    static int nestCountMax = 0;
-    private static int nestCount;
 
     Material mat;
 
     private void Awake()
     {
         mat = GetComponent<Renderer>()?.material;
+    }
+
+    Stack<Texture> texs = new Stack<Texture>();
+    private void OnRenderObject()
+    {
+        if (texs.Any())
+        {
+            var tex = texs.Pop();
+            mat.SetTexture(ReflectionTexParamStr, tex);
+        }
+        //Debug.Log($"End [{Camera.current.name}] {name} ");
     }
 
     // This is called when it's known that the object will be rendered by some
@@ -47,7 +57,7 @@ public class MirrorReflection : MonoBehaviour
             return;
 
 
-        Debug.Log(name + " " + cam.name + " " + nestCount);
+        //Debug.Log($"[{cam.name}] {name} {nestCount}");
 
         Texture reflectionTex = Texture2D.blackTexture;
         // Safeguard from recursive reflections.        
@@ -64,8 +74,7 @@ public class MirrorReflection : MonoBehaviour
             var cull = Vector3.Dot(camTrans.position - pos, normal) >= 0f;
             if (!cull)
             {
-                Camera reflectionCamera;
-                CreateMirrorObjects(cam, out reflectionCamera);
+                var (refCam, reftex) = GetMirrorData(cam);
 
 
                 // Optionally disable pixel lights for reflection
@@ -73,7 +82,7 @@ public class MirrorReflection : MonoBehaviour
                 if (m_DisablePixelLights)
                     QualitySettings.pixelLightCount = 0;
 
-                UpdateCameraModes(cam, reflectionCamera);
+                UpdateCameraModes(cam, refCam);
 
                 // Render reflection
                 // Reflect camera around reflection plane
@@ -82,20 +91,20 @@ public class MirrorReflection : MonoBehaviour
 
                 Matrix4x4 reflection = Matrix4x4.zero;
                 CalculateReflectionMatrix(ref reflection, reflectionPlane);
-                reflectionCamera.worldToCameraMatrix = cam.worldToCameraMatrix * reflection;
+                refCam.worldToCameraMatrix = cam.worldToCameraMatrix * reflection;
 
                 // Setup oblique projection matrix so that near plane is our reflection
                 // plane. This way we clip everything below/above it for free.
-                Vector4 clipPlane = CameraSpacePlane(reflectionCamera, pos, normal, 1.0f);
+                Vector4 clipPlane = CameraSpacePlane(refCam, pos, normal, 1.0f);
                 Matrix4x4 projection = cam.CalculateObliqueMatrix(clipPlane);
-                reflectionCamera.projectionMatrix = projection;
+                refCam.projectionMatrix = projection;
 
-                reflectionCamera.cullingMask = ~(1 << 4) & m_ReflectLayers.value; // never render water layer
-                reflectionCamera.targetTexture = m_ReflectionTexture;
+                refCam.cullingMask = ~(1 << 4) & m_ReflectLayers.value; // never render water layer
+                refCam.targetTexture = reftex;
 
                 GL.invertCulling = nestCount % 2 == 1;
 
-                reflectionCamera.Render();
+                refCam.Render();
 
                 GL.invertCulling = !GL.invertCulling;
 
@@ -103,13 +112,15 @@ public class MirrorReflection : MonoBehaviour
                 // Restore pixel light count
                 if (m_DisablePixelLights)
                     QualitySettings.pixelLightCount = oldPixelLightCount;
+
+                reflectionTex = reftex;
             }
 
 
-            reflectionTex = m_ReflectionTexture;
             nestCount--;
         }
 
+        if (nestCount > 0) texs.Push(mat.GetTexture(ReflectionTexParamStr));
         mat.SetTexture(ReflectionTexParamStr, reflectionTex);
     }
 
@@ -117,14 +128,11 @@ public class MirrorReflection : MonoBehaviour
     // Cleanup all the objects we possibly have created
     void OnDisable()
     {
-        if (m_ReflectionTexture)
+        mirrorDatas.Values.ToList().ForEach(data =>
         {
-            DestroyImmediate(m_ReflectionTexture);
-            m_ReflectionTexture = null;
-        }
-        foreach (DictionaryEntry kvp in m_ReflectionCameras)
-            DestroyImmediate(((Camera)kvp.Value).gameObject);
-        m_ReflectionCameras.Clear();
+            DestroyImmediate(data.Item1);
+            DestroyImmediate(data.Item2);
+        });
     }
 
 
@@ -161,35 +169,38 @@ public class MirrorReflection : MonoBehaviour
     }
 
     // On-demand create any objects we need
-    private void CreateMirrorObjects(Camera currentCamera, out Camera reflectionCamera)
+    private (Camera, RenderTexture) GetMirrorData(Camera cam)
     {
-        reflectionCamera = null;
+        mirrorDatas.TryGetValue(cam, out var data);
+        var (refCam, refTex) = data;
 
         // Reflection render texture
-        if (!m_ReflectionTexture || m_OldReflectionTextureSize != m_TextureSize)
+        if (refTex == null || refTex.width != m_TextureSize || refTex.height != m_TextureSize)
         {
-            if (m_ReflectionTexture)
-                DestroyImmediate(m_ReflectionTexture);
-            m_ReflectionTexture = new RenderTexture(m_TextureSize, m_TextureSize, 16);
-            m_ReflectionTexture.name = "__MirrorReflection" + GetInstanceID();
-            m_ReflectionTexture.isPowerOfTwo = true;
-            m_ReflectionTexture.hideFlags = HideFlags.DontSave;
-            m_OldReflectionTextureSize = m_TextureSize;
+            if (refTex != null)
+                DestroyImmediate(refTex);
+            refTex = new RenderTexture(m_TextureSize, m_TextureSize, 16);
+            refTex.name = "__MirrorReflection" + GetInstanceID();
+            refTex.isPowerOfTwo = true;
+            refTex.hideFlags = HideFlags.DontSave;
         }
 
         // Camera for reflection
-        reflectionCamera = m_ReflectionCameras[currentCamera] as Camera;
-        if (!reflectionCamera) // catch both not-in-dictionary and in-dictionary-but-deleted-GO
+        if (refCam == null) // catch both not-in-dictionary and in-dictionary-but-deleted-GO
         {
-            GameObject go = new GameObject("Mirror Refl Camera id" + GetInstanceID() + " for " + currentCamera.GetInstanceID(), typeof(Camera), typeof(Skybox));
-            reflectionCamera = go.GetComponent<Camera>();
-            reflectionCamera.enabled = false;
-            reflectionCamera.transform.position = transform.position;
-            reflectionCamera.transform.rotation = transform.rotation;
+            GameObject go = new GameObject("Mirror Refl Camera id" + GetInstanceID() + " for " + cam.GetInstanceID(), typeof(Camera), typeof(Skybox));
+            refCam = go.GetComponent<Camera>();
+            refCam.enabled = false;
+            refCam.transform.position = transform.position;
+            refCam.transform.rotation = transform.rotation;
             //reflectionCamera.gameObject.AddComponent("FlareLayer");
             go.hideFlags = HideFlags.HideAndDontSave;
-            m_ReflectionCameras[currentCamera] = reflectionCamera;
         }
+
+        data = (refCam, refTex);
+        mirrorDatas[cam] = data;
+
+        return data;
     }
 
     // Given position/normal of the plane, calculates plane in camera space.
