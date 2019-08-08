@@ -9,6 +9,8 @@ using System.Collections;
 // Make mirror live-update even when not in play mode
 public class MirrorReflection : MonoBehaviour
 {
+    const string ReflectionTexParamStr = "_ReflectionTex";
+
     public bool m_DisablePixelLights = true;
     public int m_TextureSize = 256;
     public float m_ClipPlaneOffset = 0.07f;
@@ -21,7 +23,7 @@ public class MirrorReflection : MonoBehaviour
     private RenderTexture m_ReflectionTexture = null;
     private int m_OldReflectionTextureSize = 0;
 
-    static int nestCountMax = 10;
+    static int nestCountMax = 0;
     private static int nestCount;
 
     Material mat;
@@ -30,6 +32,7 @@ public class MirrorReflection : MonoBehaviour
     {
         mat = GetComponent<Renderer>()?.material;
     }
+
     // This is called when it's known that the object will be rendered by some
     // camera. We render reflections and do other updates here.
     // Because the script executes in edit mode, reflections for the scene view
@@ -40,9 +43,13 @@ public class MirrorReflection : MonoBehaviour
             return;
 
         Camera cam = Camera.current;
-        if (!cam)
+        if (cam == null)
             return;
 
+
+        Debug.Log(name + " " + cam.name + " " + nestCount);
+
+        Texture reflectionTex = Texture2D.blackTexture;
         // Safeguard from recursive reflections.        
         if (nestCount <= nestCountMax)
         {
@@ -75,30 +82,22 @@ public class MirrorReflection : MonoBehaviour
 
                 Matrix4x4 reflection = Matrix4x4.zero;
                 CalculateReflectionMatrix(ref reflection, reflectionPlane);
-                //Vector3 oldpos = cam.transform.position;
-                //Vector3 newpos = reflection.MultiplyPoint(oldpos);
                 reflectionCamera.worldToCameraMatrix = cam.worldToCameraMatrix * reflection;
 
                 // Setup oblique projection matrix so that near plane is our reflection
                 // plane. This way we clip everything below/above it for free.
                 Vector4 clipPlane = CameraSpacePlane(reflectionCamera, pos, normal, 1.0f);
-                //Matrix4x4 projection = cam.projectionMatrix;
                 Matrix4x4 projection = cam.CalculateObliqueMatrix(clipPlane);
                 reflectionCamera.projectionMatrix = projection;
 
                 reflectionCamera.cullingMask = ~(1 << 4) & m_ReflectLayers.value; // never render water layer
                 reflectionCamera.targetTexture = m_ReflectionTexture;
-                //GL.SetRevertBackfacing(true);
-                GL.invertCulling = nestCount % 2 == 1;
-                //reflectionCamera.transform.position = newpos;
-                //Vector3 euler = cam.transform.eulerAngles;
-                //reflectionCamera.transform.eulerAngles = new Vector3(0, euler.y, euler.z);
-                //reflectionCamera.transform.rotation = cam.transform.rotation;
-                reflectionCamera.Render();
-                //reflectionCamera.transform.position = oldpos;
-                //GL.SetRevertBackfacing(false);
-                GL.invertCulling = !GL.invertCulling;
 
+                GL.invertCulling = nestCount % 2 == 1;
+
+                reflectionCamera.Render();
+
+                GL.invertCulling = !GL.invertCulling;
 
 
                 // Restore pixel light count
@@ -106,20 +105,12 @@ public class MirrorReflection : MonoBehaviour
                     QualitySettings.pixelLightCount = oldPixelLightCount;
             }
 
+
+            reflectionTex = m_ReflectionTexture;
             nestCount--;
         }
 
-#if true
-        if (mat.HasProperty("_ReflectionTex"))
-            mat.SetTexture("_ReflectionTex", m_ReflectionTexture);
-#else
-        Material[] materials = rend.sharedMaterials;
-        foreach (Material mat in materials)
-        {
-            if (mat.HasProperty("_ReflectionTex"))
-                mat.SetTexture("_ReflectionTex", m_ReflectionTexture);
-        }
-#endif
+        mat.SetTexture(ReflectionTexParamStr, reflectionTex);
     }
 
 
@@ -199,14 +190,6 @@ public class MirrorReflection : MonoBehaviour
             go.hideFlags = HideFlags.HideAndDontSave;
             m_ReflectionCameras[currentCamera] = reflectionCamera;
         }
-    }
-
-    // Extended sign: returns -1, 0 or 1 based on sign of a
-    private static float sgn(float a)
-    {
-        if (a > 0.0f) return 1.0f;
-        if (a < 0.0f) return -1.0f;
-        return 0.0f;
     }
 
     // Given position/normal of the plane, calculates plane in camera space.
